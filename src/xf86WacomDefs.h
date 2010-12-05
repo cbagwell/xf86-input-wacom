@@ -361,6 +361,7 @@ struct _WacomFilterState
         int y[MAX_SAMPLES];
         int tiltx[MAX_SAMPLES];
         int tilty[MAX_SAMPLES];
+        int sample[MAX_SAMPLES];
 };
 
 struct _WacomChannel

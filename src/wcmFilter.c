@@ -25,6 +25,8 @@
 #include "xf86Wacom.h"
 #include "wcmFilter.h"
 
+#define WCM_FILTER_SHRINK_RATE 100
+
 /*****************************************************************************
  * Static functions
  ****************************************************************************/
@@ -218,6 +220,8 @@ static void storeRawSample(WacomCommonPtr common, WacomChannelPtr pChannel,
 {
 	WacomFilterState *fs;
 	int i;
+	int sample = (int)GetTimeInMillis();
+
 
 	fs = &pChannel->rawFilter;
 	if (!fs->npoints)
@@ -228,6 +232,7 @@ static void storeRawSample(WacomCommonPtr common, WacomChannelPtr pChannel,
 		{
 			fs->x[i]= ds->x;
 			fs->y[i]= ds->y;
+			fs->sample[i] = sample;
 		}
 		if (HANDLE_TILT(common) && (ds->device_type == STYLUS_ID ||
 					    ds->device_type == ERASER_ID))
@@ -240,14 +245,42 @@ static void storeRawSample(WacomCommonPtr common, WacomChannelPtr pChannel,
 		}
 		++fs->npoints;
 	} else {
+		int no_change = 1;
+
+		if (fs->x[0] != ds->x && fs->y[0] != ds->y)
+			no_change = 0;
+
+		if (HANDLE_TILT(common) && (ds->device_type == STYLUS_ID ||
+					    ds->device_type == ERASER_ID))
+		{
+			if (fs->tiltx[0] != ds->tiltx &&
+			    fs->tilty[0] != ds->tilty)
+				no_change = 0;
+		}
+
+		/* Tablets often have high resolution pressure and
+		 * its common to see stream of pressure changes with
+		 * no X/Y changes.  This can cause cursor movement
+		 * as these events cause old samples to be pushed out
+		 * of window.  Lifting pen at end of fast stroke is
+		 * example and can cause unwanted tail on stroke.
+		 *
+		 * Work around this by not recording samples when
+		 * nothing has changed.
+		 */
+		if (no_change)
+			return;
+
 		/* Shift window and insert latest sample */
 		for (i=common->wcmRawSample - 1; i>0; i--)
 		{
 			fs->x[i]= fs->x[i-1];
 			fs->y[i]= fs->y[i-1];
+			fs->sample[i]= fs->sample[i-1];
 		}
 		fs->x[0] = ds->x;
 		fs->y[0] = ds->y;
+		fs->sample[0] = sample;
 		if (HANDLE_TILT(common) && (ds->device_type == STYLUS_ID ||
 					    ds->device_type == ERASER_ID))
 		{
@@ -273,14 +306,24 @@ int wcmFilterCoord(WacomCommonPtr common, WacomChannelPtr pChannel,
 {
 	int x=0, y=0, tx=0, ty=0, i;
 	WacomFilterState *state;
-
-	DBG(10, common, "common->wcmRawSample = %d \n", common->wcmRawSample);
+	int sample_window, sample_delta, window_shrink;
 
 	storeRawSample(common, pChannel, ds);
 
 	state = &pChannel->rawFilter;
 
-	for ( i=0; i<common->wcmRawSample; i++ )
+	sample_delta = state->sample[0] - state->sample[state->npoints-1];
+
+	window_shrink = sample_delta / WCM_FILTER_SHRINK_RATE;
+
+	if (window_shrink >= common->wcmRawSample)
+		window_shrink = common->wcmRawSample-1;
+
+	sample_window = common->wcmRawSample - window_shrink;
+
+	DBG(10, common, "common->wcmRawSample = %d sample_window = %d\n", common->wcmRawSample, sample_window);
+
+	for ( i=0; i< sample_window; i++ )
 	{
 		x += state->x[i];
 		y += state->y[i];
@@ -291,8 +334,8 @@ int wcmFilterCoord(WacomCommonPtr common, WacomChannelPtr pChannel,
 			ty += state->tilty[i];
 		}
 	}
-	ds->x = x / common->wcmRawSample;
-	ds->y = y / common->wcmRawSample;
+	ds->x = x / sample_window;
+	ds->y = y / sample_window;
 
 	if (HANDLE_TILT(common) && (ds->device_type == STYLUS_ID ||
 				    ds->device_type == ERASER_ID))
